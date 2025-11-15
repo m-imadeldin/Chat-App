@@ -8,7 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="SocketIOClient" Version="5.0.5" />
+    <PackageReference Include="SocketIOClient" Version="3.1.2" />
   </ItemGroup>
 
 </Project>

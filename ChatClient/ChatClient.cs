@@ -7,7 +7,7 @@ namespace ChatClientApp
 {
     public class ChatClient
     {
-        private readonly SocketIO _client;
+        private readonly SocketIOClient.SocketIO _client;
         private readonly User _user;
         private readonly MessageHistory _history;
 
@@ -15,14 +15,13 @@ namespace ChatClientApp
         {
             _user = user;
             _history = history;
-
-            // Använd http(s) URL — SocketIOClient sköter uppgradering till websocket själv.
-            // Path sätts till standard "/socket.io/". Ändra om din server kräver annat.
-            _client = new SocketIO(serverUrl, new SocketIOOptions
+            
+            _client = new SocketIOClient.SocketIO(serverUrl, new SocketIOClient.SocketIOOptions
             {
                 Path = "/socket.io/",
                 Transport = SocketIOClient.Transport.TransportProtocol.WebSocket
             });
+
 
             RegisterHandlers();
         }
