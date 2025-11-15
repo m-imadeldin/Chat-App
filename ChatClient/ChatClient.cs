@@ -1,12 +1,14 @@
 using System;
 using System.Threading.Tasks;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using SocketIOClient;
 
 namespace ChatClientApp
 {
     public class ChatClient
     {
-        private readonly SocketIOClient.SocketIO _client;
+        private readonly SocketIO _client;
         private readonly User _user;
         private readonly MessageHistory _history;
 
@@ -15,7 +17,7 @@ namespace ChatClientApp
             _user = user;
             _history = history;
 
-            _client = new SocketIOClient.SocketIO("wss://api.leetcode.se", new SocketIOOptions
+            _client = new SocketIO("wss://api.leetcode.se", new SocketIOOptions
             {
                 Path = "/sys25d",
                 Transport = SocketIOClient.Transport.TransportProtocol.WebSocket
@@ -27,51 +29,79 @@ namespace ChatClientApp
             _client.OnConnected += async (sender, e) =>
             {
                 Console.WriteLine("Connected to chat!");
-                await _client.EmitAsync("chat_join", _user.Username);
+                await _client.EmitAsync("join", new { username = _user.Username });
+                await _client.EmitAsync("chat_join", new { username = _user.Username });
+                Console.WriteLine("Join emitted (join + chat_join)");
             };
 
             _client.On("message", response =>
             {
                 try
                 {
-                    var obj = response.GetValue<System.Text.Json.Nodes.JsonObject>();
+                    var obj = response.GetValue<JsonObject>();
+                    Console.WriteLine("RECEIVED event 'message' raw: " + obj.ToJsonString());
                     string sender = obj["username"]?.ToString() ?? "Unknown";
                     string text = obj["message"]?.ToString() ?? "";
-                    string time = obj["time"]?.ToString() ?? "";
-                    
+                    string time = obj["time"]?.ToString() ?? DateTime.Now.ToString("HH:mm");
                     Console.WriteLine($"[{time}] {sender}: {text}");
-                    
+                    _history.Add(new Message { Sender = sender, Text = text, Timestamp = DateTime.Now });
                 }
-                catch
+                catch (Exception ex)
                 {
-                    try
-                    {
-                        var raw = response.GetValue<string>();
-                        Console.WriteLine(raw);
-                    }
-                    catch
-                    {
-                        Console.WriteLine("Received message event with unknown payload.");
-                    }
+                    Console.WriteLine("message handler exception: " + ex.Message);
+                    Console.WriteLine("message raw: " + response.ToString());
+                }
+            });
+
+            _client.On("chat_message", response =>
+            {
+                try
+                {
+                    var obj = response.GetValue<JsonObject>();
+                    Console.WriteLine("RECEIVED event 'chat_message' raw: " + obj.ToJsonString());
+                    string sender = obj["username"]?.ToString() ?? "Unknown";
+                    string text = obj["message"]?.ToString() ?? "";
+                    string time = obj["time"]?.ToString() ?? DateTime.Now.ToString("HH:mm");
+                    Console.WriteLine($"[{time}] {sender}: {text}");
+                    _history.Add(new Message { Sender = sender, Text = text, Timestamp = DateTime.Now });
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("chat_message handler exception: " + ex.Message);
+                    Console.WriteLine("chat_message raw: " + response.ToString());
                 }
             });
 
             _client.On("user_joined", res =>
             {
-                var name = res.GetValue<string>();
-                Console.WriteLine($"*** {name} has joined ***");
+                Console.WriteLine("RECEIVED event 'user_joined': " + res.ToString());
+                try
+                {
+                    var name = res.GetValue<string>();
+                    Console.WriteLine($"*** {name} has joined ***");
+                }
+                catch { }
             });
 
             _client.On("user_left", res =>
             {
-                var name = res.GetValue<string>();
-                Console.WriteLine($"*** {name} has left ***");
+                Console.WriteLine("RECEIVED event 'user_left': " + res.ToString());
+                try
+                {
+                    var name = res.GetValue<string>();
+                    Console.WriteLine($"*** {name} has left ***");
+                }
+                catch { }
             });
 
-            _client.On("typing", res =>
+            // Generic fallback - log unknown events if any library supports them (best-effort)
+            _client.OnAny((eventName, response) =>
             {
-                var name = res.GetValue<string>();
-                Console.WriteLine($"({name} skriver...)");
+                try
+                {
+                    Console.WriteLine($"ON_ANY -> Event: {eventName}, Payload: {response.ToString()}");
+                }
+                catch { }
             });
 
             _client.OnDisconnected += (s, e) =>
@@ -87,17 +117,25 @@ namespace ChatClientApp
         {
             if (string.IsNullOrWhiteSpace(text)) return;
 
-            await _client.EmitAsync("typing", _user.Username);
+            try
+            {
+                await _client.EmitAsync("message", new { username = _user.Username, message = text });
+                await _client.EmitAsync("chat_message", new { username = _user.Username, message = text });
+                Console.WriteLine("Sent (message + chat_message): " + text);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Error emitting message: " + ex.Message);
+            }
 
-            var msg = new Message
+            var localMsg = new Message
             {
                 Sender = _user.Username,
                 Text = text,
                 Timestamp = DateTime.Now
             };
 
-            await _client.EmitAsync("chat_message", msg);
-            _history.Add(msg);
+            _history.Add(localMsg);
         }
 
         public async Task SendPrivateMessageAsync(string recipient, string text)
@@ -113,62 +151,26 @@ namespace ChatClientApp
                 Timestamp = DateTime.Now
             };
 
-            await _client.EmitAsync("private_message", msg);
-            _history.Add(msg);
-
-            Console.WriteLine($"(DM to {recipient}) {text}");
-        }
-
-        public async Task HandleCommandAsync(string input)
-        {
-            if (!input.StartsWith("/")) return;
-
-            var parts = input.Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
-            var cmd = parts[0].ToLower();
-
-            switch (cmd)
+            try
             {
-                case "/help":
-                    Console.WriteLine("Kommandon:");
-                    Console.WriteLine("/help - visa hjälp");
-                    Console.WriteLine("/quit - lämna chatten");
-                    Console.WriteLine("/history X - visa senaste X meddelanden");
-                    Console.WriteLine("/dm <user> <text> - skicka privat meddelande");
-                    break;
-
-                case "/quit":
-                    await DisconnectAsync();
-                    break;
-
-                case "/history":
-                    if (parts.Length < 2 || !int.TryParse(parts[1], out int count))
-                    {
-                        Console.WriteLine("Använd: /history <antal>");
-                        return;
-                    }
-                    _history.ShowLast(count);
-                    break;
-
-                case "/dm":
-                    if (parts.Length < 3)
-                    {
-                        Console.WriteLine("Använd: /dm <user> <text>");
-                        return;
-                    }
-                    await SendPrivateMessageAsync(parts[1], parts[2]);
-                    break;
-
-                default:
-                    Console.WriteLine("Okänt kommando. Skriv /help.");
-                    break;
+                await _client.EmitAsync("private_message", new { from = _user.Username, to = recipient, message = text });
+                Console.WriteLine($"(DM to {recipient}) {text}");
             }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Error emitting private_message: " + ex.Message);
+            }
+
+            _history.Add(msg);
         }
 
         public async Task DisconnectAsync()
         {
             try
             {
-                await _client.EmitAsync("leave", _user.Username);
+                await _client.EmitAsync("leave", new { username = _user.Username });
+                await _client.EmitAsync("chat_leave", new { username = _user.Username });
+                Console.WriteLine("Leave emitted (leave + chat_leave)");
             }
             catch { }
 
